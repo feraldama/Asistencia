@@ -119,10 +119,9 @@ app.get('/api/reports/general', async (req, res) => {
       return res.status(400).json({ error: 'Faltan fechas de inicio o fin' });
     }
 
-    // Convertimos a fechas para Prisma (añadimos horas para cubrir todo el día endDate)
-    const initDate = new Date(startDate as string);
-    const finishDate = new Date(endDate as string);
-    finishDate.setHours(23, 59, 59, 999);
+    // Convertimos a fechas considerando la zona horaria local para cubrir todo el día
+    const initDate = new Date(`${startDate}T00:00:00.000`);
+    const finishDate = new Date(`${endDate}T23:59:59.999`);
 
     const asistencias = await prisma.asistencia.findMany({
       where: {
@@ -154,9 +153,8 @@ app.get('/api/reports/employee/:id', async (req, res) => {
       return res.status(400).json({ error: 'Faltan fechas de inicio o fin' });
     }
 
-    const initDate = new Date(startDate as string);
-    const finishDate = new Date(endDate as string);
-    finishDate.setHours(23, 59, 59, 999);
+    const initDate = new Date(`${startDate}T00:00:00.000`);
+    const finishDate = new Date(`${endDate}T23:59:59.999`);
 
     const asistencias = await prisma.asistencia.findMany({
       where: {
