@@ -1,0 +1,224 @@
+const Pago = require("../models/pago.model");
+const Suscripcion = require("../models/suscripcion.model");
+const Plan = require("../models/plan.model");
+const RegistroDiarioCaja = require("../models/registrodiariocaja.model");
+const Caja = require("../models/caja.model");
+
+exports.getAll = async (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  const page = parseInt(req.query.page) || 1;
+  const offset = (page - 1) * limit;
+  const sortBy = req.query.sortBy || "PagoId";
+  const sortOrder = req.query.sortOrder || "ASC";
+  try {
+    const result = await Pago.getAllPaginated(limit, offset, sortBy, sortOrder);
+    res.json({
+      data: result.pagos,
+      pagination: {
+        totalItems: result.total,
+        totalPages: Math.ceil(result.total / limit),
+        currentPage: page,
+        itemsPerPage: limit,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getById = async (req, res) => {
+  try {
+    const pago = await Pago.getById(req.params.id);
+    if (!pago) {
+      return res.status(404).json({ message: "Pago no encontrado" });
+    }
+    res.json(pago);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.create = async (req, res) => {
+  try {
+    let suscripcionId = req.body.SuscripcionId;
+
+    // Si se envía ClienteId y PlanId pero no SuscripcionId, crear la suscripción automáticamente
+    if (!suscripcionId && req.body.ClienteId && req.body.PlanId) {
+      // Obtener el plan para calcular la duración (si no vienen las fechas)
+      const plan = await Plan.getById(req.body.PlanId);
+      if (!plan) {
+        return res.status(400).json({
+          message: "Plan no encontrado",
+        });
+      }
+
+      let fechaInicio;
+      let fechaFin;
+
+      // Si vienen las fechas en el body, usarlas; si no, calcularlas
+      if (req.body.SuscripcionFechaInicio && req.body.SuscripcionFechaFin) {
+        fechaInicio = req.body.SuscripcionFechaInicio;
+        fechaFin = req.body.SuscripcionFechaFin;
+      } else {
+        // Calcular fechas: fecha_inicio = hoy, fecha_fin = hoy + duración
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+        fechaInicio = hoy.toISOString().split("T")[0];
+
+        const fechaFinDate = new Date(hoy);
+        fechaFinDate.setDate(
+          fechaFinDate.getDate() + (plan.PlanDuracion || 30)
+        );
+        fechaFin = fechaFinDate.toISOString().split("T")[0];
+      }
+
+      // Crear la suscripción (el estado se calcula automáticamente en el frontend)
+      const nuevaSuscripcion = await Suscripcion.create({
+        ClienteId: req.body.ClienteId,
+        PlanId: req.body.PlanId,
+        SuscripcionFechaInicio: fechaInicio,
+        SuscripcionFechaFin: fechaFin,
+      });
+
+      suscripcionId = nuevaSuscripcion.SuscripcionId;
+    }
+
+    // Validar que tenemos un SuscripcionId
+    if (!suscripcionId) {
+      return res.status(400).json({
+        message:
+          "Se requiere SuscripcionId o ClienteId y PlanId para crear el pago",
+      });
+    }
+
+    // Crear el pago con el SuscripcionId (ya sea el enviado o el creado)
+    const pagoData = {
+      ...req.body,
+      SuscripcionId: suscripcionId,
+    };
+
+    const pago = await Pago.create(pagoData);
+
+    // Registrar en registrodiariocaja si el usuario tiene caja aperturada
+    try {
+      const estado = await RegistroDiarioCaja.getEstadoAperturaPorUsuario(
+        req.user?.id || pagoData.PagoUsuarioId
+      );
+      const cajaAbierta =
+        estado?.cajaId &&
+        estado.aperturaId > estado.cierreId;
+
+      if (cajaAbierta) {
+        // TipoGastoId 2 = ingreso. TipoGastoGrupoId: CO->1, PO->4, TR->6
+        const tipoGrupoMap = { CO: 1, PO: 4, TR: 6 };
+        const tipoGastoGrupoId =
+          tipoGrupoMap[pagoData.PagoTipo] || 1;
+
+        const detalle = `Pago suscripción #${pago.SuscripcionId || suscripcionId} - ${pagoData.PagoTipo === "CO" ? "Contado" : pagoData.PagoTipo === "PO" ? "POS" : "Transferencia"}`;
+
+        await RegistroDiarioCaja.create({
+          CajaId: estado.cajaId,
+          RegistroDiarioCajaFecha: pagoData.PagoFecha || new Date(),
+          TipoGastoId: 2,
+          TipoGastoGrupoId: tipoGastoGrupoId,
+          RegistroDiarioCajaDetalle: detalle,
+          RegistroDiarioCajaMonto: pagoData.PagoMonto,
+          UsuarioId: req.user?.id || pagoData.PagoUsuarioId,
+        });
+
+        const cajaActual = await Caja.getById(estado.cajaId);
+        if (cajaActual) {
+          const nuevoMonto =
+            Number(cajaActual.CajaMonto || 0) + Number(pagoData.PagoMonto);
+          await Caja.update(estado.cajaId, {
+            CajaDescripcion: cajaActual.CajaDescripcion,
+            CajaMonto: nuevoMonto,
+          });
+        }
+      }
+    } catch (regErr) {
+      console.warn("No se pudo registrar en caja (pago creado correctamente):", regErr.message);
+    }
+
+    res.status(201).json({
+      message: "Pago creado exitosamente",
+      data: pago,
+      suscripcionCreada:
+        !req.body.SuscripcionId && req.body.ClienteId && req.body.PlanId,
+    });
+  } catch (error) {
+    console.error("Error al crear pago:", error);
+    res.status(400).json({ message: error.message });
+  }
+};
+
+exports.update = async (req, res) => {
+  try {
+    const pago = await Pago.update(req.params.id, req.body);
+    if (!pago) {
+      return res.status(404).json({ message: "Pago no encontrado" });
+    }
+    res.json({ message: "Pago actualizado exitosamente", data: pago });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+};
+
+exports.delete = async (req, res) => {
+  try {
+    const success = await Pago.delete(req.params.id);
+    if (!success) {
+      return res.status(404).json({ message: "Pago no encontrado" });
+    }
+    res.json({ message: "Pago eliminado exitosamente" });
+  } catch (error) {
+    if (
+      error &&
+      error.message &&
+      error.message.includes("a foreign key constraint fails")
+    ) {
+      return res.status(400).json({
+        message:
+          "No se puede eliminar el pago porque tiene registros asociados.",
+      });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.searchPagos = async (req, res) => {
+  try {
+    const { q: searchTerm } = req.query;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const sortBy = req.query.sortBy || "PagoId";
+    const sortOrder = req.query.sortOrder || "ASC";
+
+    if (!searchTerm || searchTerm.trim() === "") {
+      return res
+        .status(400)
+        .json({ error: "El término de búsqueda no puede estar vacío" });
+    }
+
+    const result = await Pago.searchPagos(
+      searchTerm,
+      limit,
+      offset,
+      sortBy,
+      sortOrder
+    );
+
+    res.json({
+      data: result.pagos,
+      pagination: {
+        totalItems: result.total,
+        totalPages: Math.ceil(result.total / limit),
+        currentPage: page,
+        itemsPerPage: limit,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Error al buscar pagos" });
+  }
+};
