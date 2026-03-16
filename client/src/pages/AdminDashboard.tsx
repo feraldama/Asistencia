@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import { Users, Clock, LogOut, LayoutDashboard, FileText, Shield, Key, Trash2, Edit2, Plus } from 'lucide-react';
+import { Users, Clock, LogOut, LayoutDashboard, FileText, Shield, Key, Trash2, Edit2, Plus, Search } from 'lucide-react';
 
 // Subrutas del admin
 function Overview() {
@@ -322,6 +322,164 @@ function Administradores() {
   );
 }
 
+function Reportes() {
+  const [tab, setTab] = useState<'GENERAL' | 'INDIVIDUAL'>('GENERAL');
+  
+  // Filtros
+  const today = new Date().toISOString().split('T')[0];
+  const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState(today);
+  const [selectedEmployee, setSelectedEmployee] = useState('');
+  
+  // Datos
+  const [empleados, setEmpleados] = useState<any[]>([]);
+  const [reportData, setReportData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // Cargar lista de empleados para el select
+  useEffect(() => {
+    if (tab === 'INDIVIDUAL' && empleados.length === 0) {
+      axios.get('http://localhost:4000/api/employees')
+        .then(res => setEmpleados(res.data))
+        .catch(console.error);
+    }
+  }, [tab]);
+
+  const fetchReport = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoading(true);
+    setReportData([]);
+
+    try {
+      let url = '';
+      if (tab === 'GENERAL') {
+        url = `http://localhost:4000/api/reports/general?startDate=${startDate}&endDate=${endDate}`;
+      } else {
+        if (!selectedEmployee) {
+          alert('Por favor selecciona un empleado');
+          setLoading(false);
+          return;
+        }
+        url = `http://localhost:4000/api/reports/employee/${selectedEmployee}?startDate=${startDate}&endDate=${endDate}`;
+      }
+
+      const res = await axios.get(url);
+      setReportData(res.data);
+    } catch (error: any) {
+      alert(error.response?.data?.error || 'Error al cargar reporte');
+    }
+    setLoading(false);
+  };
+
+  const formatearFecha = (isoString: string) => {
+    const d = new Date(isoString);
+    return d.toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
+  };
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold text-slate-800 mb-6">Reportes de Asistencia</h2>
+
+      {/* Selector de Tabs */}
+      <div className="flex gap-2 mb-8 bg-slate-200/50 p-1.5 rounded-2xl w-fit">
+        <button 
+          onClick={() => setTab('GENERAL')}
+          className={`px-6 py-2.5 rounded-xl font-semibold transition-all ${tab === 'GENERAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+        >
+          Reporte General
+        </button>
+        <button 
+          onClick={() => setTab('INDIVIDUAL')}
+          className={`px-6 py-2.5 rounded-xl font-semibold transition-all ${tab === 'INDIVIDUAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+        >
+          Por Empleado
+        </button>
+      </div>
+
+      {/* Controles de Filtro */}
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-8">
+        <form onSubmit={fetchReport} className="flex flex-col md:flex-row gap-4 items-end">
+          <div className="flex-1 w-full">
+            <label className="block text-sm font-medium text-slate-600 mb-2">Fecha Inicio</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 rounded-xl outline-none transition-all" />
+          </div>
+          <div className="flex-1 w-full">
+            <label className="block text-sm font-medium text-slate-600 mb-2">Fecha Fin</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 rounded-xl outline-none transition-all" />
+          </div>
+          
+          {tab === 'INDIVIDUAL' && (
+            <div className="flex-1 w-full">
+              <label className="block text-sm font-medium text-slate-600 mb-2">Empleado</label>
+              <select 
+                value={selectedEmployee} 
+                onChange={e => setSelectedEmployee(e.target.value)}
+                required
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 rounded-xl outline-none transition-all"
+              >
+                <option value="" disabled>Seleccionar...</option>
+                {empleados.map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.nombre_completo} ({emp.documento})</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <button type="submit" disabled={loading} className="w-full md:w-auto px-8 py-3 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 shadow-md shadow-indigo-200 transition-all hover:-translate-y-0.5 whitespace-nowrap flex items-center justify-center gap-2">
+            <Search size={18} /> {loading ? 'Buscando...' : 'Generar Reporte'}
+          </button>
+        </form>
+      </div>
+
+      {/* Resultados de la Tabla */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden overflow-x-auto">
+        <table className="min-w-full w-full text-left">
+          <thead className="bg-slate-50 border-b border-slate-100">
+            <tr>
+              <th className="px-6 py-4 font-semibold text-slate-600 text-sm">Fecha y Hora</th>
+              {tab === 'GENERAL' && <th className="px-6 py-4 font-semibold text-slate-600 text-sm">Empleado</th>}
+              <th className="px-6 py-4 font-semibold text-slate-600 text-sm">Tipo</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {reportData.map((record, index) => (
+              <tr key={index} className="hover:bg-slate-50 transition-colors">
+                <td className="px-6 py-4 text-slate-700 font-medium">
+                  {formatearFecha(record.timestamp)}
+                </td>
+                {tab === 'GENERAL' && (
+                  <td className="px-6 py-4">
+                    <div className="font-medium text-slate-800">{record.empleado?.nombre_completo}</div>
+                    <div className="text-xs text-slate-500 font-mono mt-0.5">DNI {record.empleado?.documento}</div>
+                  </td>
+                )}
+                <td className="px-6 py-4">
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                    record.tipo === 'ENTRADA' 
+                      ? 'bg-emerald-100 text-emerald-700' 
+                      : 'bg-orange-100 text-orange-700'
+                  }`}>
+                    {record.tipo}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            
+            {reportData.length === 0 && !loading && (
+              <tr>
+                <td colSpan={tab === 'GENERAL' ? 3 : 2} className="px-6 py-12 text-center text-slate-500">
+                  <FileText size={48} className="mx-auto text-slate-300 mb-4 opacity-50" />
+                  <p>No se encontraron registros en estas fechas.</p>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -414,6 +572,7 @@ export default function AdminDashboard() {
             <Route path="/" element={<Overview />} />
             <Route path="/dashboard" element={<Overview />} />
             <Route path="/empleados" element={<Empleados />} />
+            <Route path="/reportes" element={<Reportes />} />
             <Route path="/admins" element={<Administradores />} />
           </Routes>
         </div>
